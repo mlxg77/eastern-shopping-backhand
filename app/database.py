@@ -14,7 +14,7 @@ engine = create_engine(
     pool_pre_ping=True,       # 连接前 ping 一下，防止断开连接
     pool_size=10,             # 连接池大小
     max_overflow=20,          # 超出连接池大小时允许额外创建的连接数
-    echo=settings.DEBUG,      # 调试模式下打印 SQL
+    echo=False,              # SQL 日志由 logging_config 统一控制
 )
 
 # Session 工厂

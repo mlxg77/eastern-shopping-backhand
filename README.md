@@ -112,6 +112,7 @@ fastAPI-guigu-shopping/
 - `.env` 存放真实配置，已加入 `.gitignore` 不提交
 - `.env.example` 是模板文件，含占位符，提交到 Git 供协作者参考
 - `.gitignore` 还忽略了 `__pycache__/`、`.venv/`、IDE 配置等
+- 通过 `git init` 初始化仓库，首次提交包含 18 个文件（不含 `.env`）
 
 ### 原理与决策
 
@@ -143,6 +144,10 @@ PyMySQL 连接 MySQL 8.0+ 时，默认使用 `caching_sha2_password` 认证插�
 **3. PowerShell 中文乱码**
 
 在 Windows PowerShell 中通过 `urllib` 测试接口时，返回的中文内容显示为乱码。这是 PowerShell 终端编码问题（默认 GBK），不影响实际 JSON 响应内容，浏览器和 Swagger UI 中显示正常。
+
+**4. DATABASE_URL 中密码的特殊字符**
+
+密码 `Root@123456` 中的 `@` 在 SQLAlchemy 连接字符串中会被误解析为用户名与主机的分隔符，导致连接失败。需要将特殊字符做 URL 编码：`@` → `%40`，写成 `Root%40123456`。常见需要编码的字符还有 `:` → `%3A`、`/` → `%2F`、`#` → `%23`。
 
 ---
 

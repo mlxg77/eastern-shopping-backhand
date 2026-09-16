@@ -1,12 +1,12 @@
 """
-日志配置模块
+日志配置
 统一配置全项目的 logging 格式和输出
 """
 
 import logging
 import sys
 
-from app.config import settings
+from app.config.settings import settings
 
 
 def setup_logging() -> None:

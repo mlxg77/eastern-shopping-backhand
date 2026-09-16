@@ -7,8 +7,7 @@ import logging
 
 from fastapi import FastAPI
 
-from app.config import settings
-from app.logging_config import setup_logging
+from app.config import settings, setup_logging
 
 setup_logging()
 

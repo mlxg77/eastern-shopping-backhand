@@ -1,5 +1,5 @@
 """
-配置管理模块
+应用配置
 使用 pydantic-settings 从 .env 文件读取配置
 """
 

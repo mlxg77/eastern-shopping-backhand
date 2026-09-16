@@ -4,30 +4,21 @@ FastAPI 应用入口
 """
 
 import logging
-from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
 from app.config import settings
 from app.logging_config import setup_logging
 
+setup_logging()
+
 logger = logging.getLogger(__name__)
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """应用生命周期管理"""
-    setup_logging()
-    logger.info("应用启动中 ...")
-    yield
-    logger.info("应用已关闭")
 
 
 app = FastAPI(
     title=settings.APP_NAME,
     description="硅谷甄选商城管理系统 API",
     version="0.1.0",
-    lifespan=lifespan,
 )
 
 

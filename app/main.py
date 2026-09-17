@@ -7,7 +7,10 @@ import logging
 
 from fastapi import FastAPI
 
+from app.api.exception_handlers import register_exception_handlers
+from app.routes.acl.index import router as acl_index_router
 from app.config import settings, setup_logging
+from app.utils.response import success
 
 setup_logging()
 
@@ -20,6 +23,8 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# 注册全局异常处理器：保证所有错误也按统一格式返回
+register_exception_handlers(app)
 
 # ============================================================
 # 健康检查
@@ -28,16 +33,14 @@ app = FastAPI(
 @app.get("/", tags=["健康检查"])
 def root():
     """健康检查接口"""
-    return {
+    return success({
         "status": "ok",
         "app": settings.APP_NAME,
         "version": "0.1.0",
-    }
-
+    })
 
 # ============================================================
-# 路由注册（后续添加业务模块时在此处 include_router）
+# 路由注册
 # ============================================================
-# 示例：
-# from app.api import products
-# app.include_router(products.router, prefix="/api/products", tags=["商品管理"])
+
+app.include_router(acl_index_router)

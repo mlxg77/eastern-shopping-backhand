@@ -787,6 +787,7 @@ role_menu 存量有重复行，前端勾选树可能因脏数据回传重复 ID�
 - [A.6 HTTP 200 的产出链路：成功走默认值，失败走 fail()](#a6-http-200-的产出链路成功走默认值失败走-fail)
 - [A.7 FastAPI 依赖注入（Depends）与请求级缓存](#a7-fastapi-依赖注入depends与请求级缓存)
 - [A.8 Starlette 路由匹配：先到先得与 FULL / PARTIAL](#a8-starlette-路由匹配先到先得与-full--partial)
+- [A.9 app.mount 与 StaticFiles：三个 static 与静态资源访问链路](#a9-appmount-与-staticfiles三个-static-与静态资源访问链路)
 
 ### A.1 Python 包与 `__init__.py`
 
@@ -1063,3 +1064,51 @@ FastAPI 的底层是 Starlette，路由匹配算法是**按注册顺序逐条尝
 ```
 
 **本项目纪律：静态在前、通配最后。** 凡是与通配「同形状」（路径段数相同 + 方法相同）的具体路由，必须注册在通配之前——`user.py` 的 `GET /toAssign/{adminId}` 与通配同为「两段 + GET」，属重点防范对象。
+
+### A.9 app.mount 与 StaticFiles：三个 static 与静态资源访问链路
+
+`main.py` 末行的 `app.mount("/static", StaticFiles(directory="static"), name="static")`：三个 `static` 拼写相同，但分属**三个互不绑定的独立参数**：
+
+| 位置 | 参数 | 所属空间 | 作用 |
+|------|------|----------|------|
+| ① | `"/static"` | 网址空间 | 挂载点：请求 URL 里匹配的前缀，**必须有**前导 `/` |
+| ② | `directory="static"` | 磁盘空间 | 文件从哪里取，相对路径（相对进程工作目录＝项目根），**不能有**前导 `/` |
+| ③ | `name="static"` | 命名空间 | 仅供 `request.url_for("static", ...)` 反向生成 URL 与调试认人，不参与匹配和文件查找（签名默认 `None`，可省略） |
+
+**三者互相独立（本项目实测）：** 故意写成 `app.mount("/assets", StaticFiles(directory="static"), name="files")`——请求 `/assets/xxx` 照样命中 `static/` 目录里的文件；`url_for("files", path=...)` 按 URL 前缀生成 `/assets/...`；路由表里登记为 `('/assets', 'files')`。三者同名只是本项目为可读性做的「惯例对齐」。
+
+**映射的本质是「前缀规则」，不是「登记表」：**
+
+- 挂载规则：凡以 `/static` 开头的请求，剥掉前缀，按剩余相对路径到磁盘 `static/` 目录**现场查文件**——找到就返回文件本身，找不到就报 404（被全局处理器包装成 209）
+- 上传端（`file_upload.py`）把文件写到 `static/img/sph/...`，返回 `/api/static/img/sph/...` 形状的 URL——两侧没有任何「注册」动作，全靠**共享同一个基准目录 `static/`** 这条约定自动对齐
+- 实测佐证：绕过上传接口、直接往磁盘扔一个文件，URL 立即可访问；删掉文件，URL 立即失效——零登记、无状态，因此两者**永远不需要同步什么**
+
+**完整访问链路（注意 `/api` 在哪一段被处理）：**
+
+```
+上传落盘:       static/img/sph/20260919/365-1-logo.png
+接口返回 URL:   /api/static/img/sph/20260919/365-1-logo.png
+                  ↑ 这一段后端自己根本不认识！
+浏览器 → 前端开发服务器: 代理见到 /api 就剥掉，转发给后端
+后端真实收到:   /static/img/sph/20260919/365-1-logo.png
+挂载点剥 /static → 按 img/sph/... 现场查磁盘 → 返回文件
+```
+
+实测对照：同一文件用 `/api/static/...` 直接打后端 → `body.code = 209`；用 `/static/...` 打 → 200 返回文件原文。所以 `/api` 是前端代理的「暗号」，不是后端路由；`file_upload.py` 返回的地址是**给前端用**的形状。
+
+**与「HTTP 恒 200」约定的交汇（呼应 A.6）：** 访问不存在的文件、或未经代理直打 `/api/...`，HTTP 状态码**都是 200**，只有 `body.code = 209`（请求路径不存在）能区分成败——静态 404 也会被 `StarletteHTTPException` 处理器统一包装。因此图片被删后，`<img>` 拿到的是 209 的 JSON，前端表现为**裂图**而非 404 页面。
+
+**四个易踩点：**
+
+1. **斜杠方向相反**：①必须有 `"/static"`；②必须无 `"static"`（写成 `"/static"` 会突变成盘符根目录，如 `C:\static`，文件全部找不到）
+2. **必须在项目根启动 uvicorn**：②的相对路径与上传端 `Path("static/img/sph")` 都以进程工作目录为基准，换目录启动就会「存到 A、却去 B 找」
+3. **`static/` 不入库、启动自举**：该目录被 `.gitignore` 忽略（运行时产物），而 `StaticFiles` 又拒绝不存在的目录，故 `app.mount` 之前有一行 `Path("static").mkdir(exist_ok=True)` 兜底，保证干净机器一次启动成功
+4. **`static/` 下一切文件都是公开可访问的**：任何文件 URL 可达，切勿存放敏感内容
+
+**联动改动表（改哪个参数，要连带改什么）：**
+
+| 改哪个 | 直接后果 | 必须连带修改 |
+|--------|----------|--------------|
+| ① URL 前缀 | 所有图片 URL 前缀变化 | `file_upload.py` 返回串、前端代理剥离规则、库中存量 `logoUrl` |
+| ② 磁盘目录 | 从别的文件夹取文件 | 上传端 `UPLOAD_DIR`，否则「存 A 找 B」 |
+| ③ name | 仅影响 `url_for` 的引用处 | 无（本项目当前零引用，纯预留） |

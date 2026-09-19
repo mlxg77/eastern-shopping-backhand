@@ -12,7 +12,7 @@ from app.exceptions import BizCode, BizException
 from app.models.user import User
 from app.schemas.trademark import TrademarkSaveRequest, TrademarkUpdateRequest, trademark_to_dict
 from app.utils.parse import parse_path_int
-from app.utils.response import success
+from app.utils.response import page_result, success
 
 router = APIRouter(prefix="/admin/product/baseTrademark", tags=["品牌管理"])
 
@@ -83,12 +83,4 @@ def get_trademark_page(
     trademarks, total = trademark_crud.get_trademark_page(db, page_num, limit_num)
 
     # 3. 组装统一分页结构（API.md 2.4）
-    return success(
-        {
-            "records": [trademark_to_dict(t) for t in trademarks],
-            "total": total,
-            "size": limit_num,
-            "current": page_num,
-            "pages": (total + limit_num - 1) // limit_num,
-        }
-    )
+    return success(page_result([trademark_to_dict(t) for t in trademarks], total, page_num, limit_num))

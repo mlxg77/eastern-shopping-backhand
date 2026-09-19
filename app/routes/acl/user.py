@@ -3,8 +3,6 @@ ACL 用户管理路由
 对应接口文档第 5 章：用户管理
 """
 
-from app.utils.format import fmt_time
-
 from fastapi import APIRouter, Body, Depends
 from sqlalchemy.orm import Session
 
@@ -136,6 +134,5 @@ def get_user_page(
         for u in users
     ]
 
-    # 5. 组装统一分页结构（API.md 2.4）
     # 5. 组装统一分页结构（API.md 2.4）
     return success(page_result(records, total, page_num, limit_num))

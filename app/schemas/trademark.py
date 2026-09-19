@@ -3,7 +3,6 @@
 定义品牌相关接口的请求体结构，以及 Trademark 实体的序列化
 """
 
-from datetime import datetime
 from app.utils.format import fmt_time
 
 from pydantic import BaseModel, Field

@@ -17,6 +17,7 @@
 | Part 7 | 商品分类 — 3 个接口（三级级联查询 / 双 ID 引用链） | 2026-09-19 | 已完成 |
 | Part 8 | 平台属性管理 — 3 个接口（嵌套结构 / 一个接口两用 / 整体覆盖） | 2026-09-19 | 已完成 |
 | Part 9 | SPU 管理 — 5 个接口（根级通配 / 四表同事务 / 双重构） | 2026-09-19 | 已完成 |
+| Part 10 | SKU 管理 — 9 个接口（结构变更 / 快照语义 / 46 接口收官） | 2026-09-19 | 已完成 |
 
 ---
 
@@ -974,6 +975,98 @@ attr_id 是应用层生成的雪花，子行插入不依赖数据库生成的自
 
 trademark.py 路由未换成 page_result（手写五件套输出完全等价，验收回归验证语义一致）；user.py 一行重复 import（fmt_time 导了两次）+ 一行重复注释；trademark.py Schema 残留死 import（datetime 已无使用处）。共性成因：重构时「改到能跑」和「改干净」是两个完成标准，后者需要逐行过一遍 import 区。
 
+（后记：以上四处已于 2026-09-19 全部清理完毕，22/22 回归全绿；清理过程中还顺带暴露了 trademark 被通配吞噬的潜伏 bug——详见 Part 10 踩坑记录 4。）
+
+---
+
+## Part 10 · SKU 管理 — 9 个接口（46 接口收官）
+
+> 对应 API.md 第 13 章。sku / sku_image / sku_attr_value / sku_sale_attr_value 四表、9 个接口一次交付，全项目 46 个接口就此收官。
+
+### 目标
+
+- 13.1~13.8：SPU 图片列表、SPU 销售属性列表（双层嵌套）、新增 SKU（四表同事务）、按 SPU 查 SKU 列表、SKU 分页（嵌套恒 null）、SKU 详情、上下架、删除（级联清快照）
+- 本章独有的结构议题：sku 系四表没有 create_time / update_time 列
+
+### 操作过程
+
+1. 勘察四表结构与值域：sku 11 列（category_3_id 下划线、weight varchar、price bigint、is_sale tinyint）、sku_image 6 列（**无名称列**）、快照子表结构、sku_id 引用链 4/4（业务链第三次铁证）
+2. 原方案为「mixin 拆分 + 双基类」适配无时间戳表；随后决策反转：**直接 ALTER 四表补齐时间戳列**，sku 系模型回归统一继承 Base
+3. 执行结构变更：四表 ADD COLUMN create_time / update_time（NOT NULL DEFAULT CURRENT_TIMESTAMP，update_time 带 ON UPDATE），存量 oppo 行自动回填
+4. 按修订版开工包完成 7 处改动（还原 base.py + 删 base.bak.py + sku 四文件新写 + 聚合插入）
+5. 验收：静态 7 处逐字一致 + 运行时 78/78 一次通过（FAIL=0）
+
+### 原理与决策
+
+**结构变更：改库还是改代码？**
+
+本项目 14 章以来第一次改数据库。sku 系四表是原始库仅有的无时间戳表，Base 基类自带两列，硬继承 INSERT 直接报 Unknown column。备选两条路：
+
+- **双基类**（mixin 拆 IdMixin / TimestampMixin，两个 DeclarativeBase 共享同一 MetaData）：不动库，但多一套基类概念，且「sku 表无时间戳」成为永久事实
+- **ALTER 补列**：以 API.md 13.6 契约（createTime 类型 string）为准，输出真实时间比 null 更贴文档；代价是与参照系统（原版吐 null）行为分叉、与原始数据集分叉
+
+最终选择后者（用户决策）。被放弃的双基类方案值得存档：下次在**不能改库**的环境（生产库、租用的第三方库）遇到无时间戳表，它就是正解；mixin 组装的思路（能力拆开按需组合）在任何 ORM 里都用得上。
+
+**DDL 三铁律**（与 DML 完全不同的脾气）：隐式提交不可回滚；天然不幂等（重复执行报 Duplicate column，脚本要先 SHOW COLUMNS 检查）；锁表风险与表规模相关（MySQL 8 加列走 INSTANT 算法）。另：DATETIME 而非 TIMESTAMP——后者 2038 溢出且按时区换算会「时间漂移」。
+
+**ON UPDATE CURRENT_TIMESTAMP 的「值不变不刷新」陷阱。**
+
+MySQL 只在行数据实际变化的 UPDATE 时刷新该列；`SET is_sale = 0` 而它本来就是 0，update_time 纹丝不动。验收 13.7 的断言（onSale 后 updateTime 滚动）靠的是双保险：SQLAlchemy 列级 `onupdate=func.now()` 在 Core update() 中显式写 `update_time=now()`（SQL 日志实锤）+ DB 层 ON UPDATE 兜底。
+
+**sku_image 无名称列：imgName 从 URL 尾段反推。**
+
+`image_url.rsplit("/", 1)[-1]`。不 join spu_image_list 回查名称，两个理由：① 快照表自持是设计哲学（SPU 图片被删后 join 会丢名称，URL 反推永远可用）；② 上传流程的既成事实是名称=文件名。输入侧 imgName 照 Schema 接住但忽略（第三次）。
+
+**weight 的两副面孔。**
+
+DB varchar、契约 number：入库 `str()`（路由层做形态翻译），出库 `int()` 防御转换、脏值兜 0（序列化不能因一脏值 500）。「兼容数字或字符串」零额外代码——Pydantic v2 lax 模式下 int 声明天然接受 JSON number 与整数字符串（验收用字符串 price `"599900"` 专项实测）。
+
+**spuID 大写怪名。**
+
+契约特意提醒「注意字段名为 spuID」，输入输出照抄，不要「好心」改成 spuId——改了就是 422，前端对不上。字段名是对外契约的一部分，合法即照抄。
+
+**13.5 嵌套恒 null：一个序列化函数两形态。**
+
+契约明文「列表接口返回的三个嵌套列表恒为 null（非空数组）」。`sku_to_dict` 加 keyword-only 参数 `details`：True 输出完整三嵌套（13.4/13.6），False 三字段 None（13.5）。配套 `get_sku_children` 三次 IN 查询 + 字典分组——13.4 是多 SKU 数组，逐个查就是 N+1。
+
+**keyword-only 新规：参数超过 5 个一律 `*` 分隔。**
+
+create_sku 有 12 个参数，位置传参一个错位就是静默数据错乱（str 塞进 int 位不报错）。调用点全部具名传参，错了立刻炸。
+
+**分组嵌套第四次 + 兄弟表对齐键。**
+
+13.2 双层嵌套：spu_sale_attr（父）与 sale_attr_value（子）是兄弟表（第 12 章勘察实锤），对齐键 `sale_attr_value.sale_attr_id == spu_sale_attr.base_sale_attr_id`。一次查两表 + 字典索引 + 单循环 O(n)，与第 11 章属性值分组同构。注意值元素输出的 baseSaleAttrId 取自 `sale_attr_value.sale_attr_id`——列名叫 sale_attr_id，语义是基础销售属性 ID。
+
+**级联边界的判据：数据属于谁，不是表长得像不像。**
+
+删 SPU 不动 sku 系（销售数据，订单还引用）；删 SKU 级联清三张快照表（快照行属于 SKU 自己，主体没了就是无主孤儿）。
+
+**路由红线第三次应用：sku 与 trademark 必须在 spu 之前聚合。**
+
+spu 的 `GET /{page}/{limit}` 域根级两段通配会吞掉 sku 的两段 GET（spuImageList/getSkuInfo/findBySpuId/onSale/cancelSale）。`GET /list/{page}/{limit}` 是三段路径形状不同天然不冲突。字母序 sku→spu 恰好满足；但 trademark 是反例——事后修正（见踩坑记录 4）：当前注册顺序 attr → category → file_upload → sku → trademark → spu，import 区保持字母序。验收含 getCategory2/getCategory3/spu 通配三重回归。
+
+**models/__init__.py 补欠账。**
+
+docstring 承诺「统一导出所有模型，供 Alembic 自动发现」，但第 10~12 章的模型一直靠 crud import 链间接注册。本章顺手还清——这不是风格洁癖，alembic autogenerate 依赖这个包的 import 完成表注册。
+
+### 踩坑记录
+
+**1. 方案抄到一半改方向（本章独有）**
+
+double-base 方案已抄进 base.py（还备份了 base.bak.py），ALTER 后需要整文件还原 + 删备份。教训：**方案可被新决策作废，动手越早返工越贵**——重大结构决策（改库 vs 改代码）应该在抄第一行代码前敲定。好在 mixin 版抄写本身也是学习成本，不亏。
+
+**2. 验收基准依赖结构变更时刻**
+
+13.6 oppo 的 createTime 断言值 `2026-09-19 17:26:32` 来自 ALTER 回填的实测输出（不是记忆或推断）——「预期必须有出处」系列第五次：结构变更后的验收基准必须从变更后的 DB 实测取。
+
+**3. 一次通过 78/78**
+
+继第 11 章后第二次零修正验收。三个累积纪律的兑现：断言值全部带出处（勘察 DB 事实 / 契约原文）、脚本预清理可重跑、断言读 body.code。全项目累计验收断言：27 + 39 + 45 + 78 = 189 项全绿。
+
+**4. 瑕疵清理时暴露潜伏 bug：getTrademarkList 被 spu 通配吞噬（自 Part 9 起潜伏两章）**
+
+验收后清理 Part 9 记录的四个小瑕疵，回归脚本发现 `GET /admin/product/baseTrademark/getTrademarkList` 返回 201「缺 category3Id」——那是 spu 路由的参数。根因：该路径在域根下**恰好是两段 GET**，而聚合层字母序 trademark 排在 spu 之后，域根两段通配先匹配（page=baseTrademark、limit=getTrademarkList）→ 422 → 201。Part 6 验收时它是好的，因为 spu 路由当时不存在；Part 9 加入通配后它被吞，但两章的验收都没回归这个接口。修复：trademark 移到 spu 之前注册，22/22 双向回归全绿（spu 通配仍活）。教训升级：域根通配的射程 = **域根下所有两段 GET**，包括其他子模块 prefix 下的一段路由（prefix 下的段也是域根的段）——回归范围要按「路径形状」枚举，不是按「模块」枚举；「字母序恰好满足」是一次侥幸，不是保障。
+
 ---
 
 ## 附录 · FastAPI 概念补充
@@ -991,6 +1084,8 @@ trademark.py 路由未换成 page_result（手写五件套输出完全等价，�
 - [A.7 FastAPI 依赖注入（Depends）与请求级缓存](#a7-fastapi-依赖注入depends与请求级缓存)
 - [A.8 Starlette 路由匹配：先到先得与 FULL / PARTIAL](#a8-starlette-路由匹配先到先得与-full--partial)
 - [A.9 app.mount 与 StaticFiles：三个 static 与静态资源访问链路](#a9-appmount-与-staticfiles三个-static-与静态资源访问链路)
+- [A.10 函数签名中的裸 \*：keyword-only 参数](#a10-函数签名中的裸-keyword-only-参数)
+- [A.11 工业级如何避免通配路由吞噬：三道防线](#a11-工业级如何避免通配路由吞噬三道防线)
 
 ### A.1 Python 包与 `__init__.py`
 
@@ -1315,3 +1410,107 @@ FastAPI 的底层是 Starlette，路由匹配算法是**按注册顺序逐条尝
 | ① URL 前缀 | 所有图片 URL 前缀变化 | `file_upload.py` 返回串、前端代理剥离规则、库中存量 `logoUrl` |
 | ② 磁盘目录 | 从别的文件夹取文件 | 上传端 `UPLOAD_DIR`，否则「存 A 找 B」 |
 | ③ name | 仅影响 `url_for` 的引用处 | 无（本项目当前零引用，纯预留） |
+
+### A.10 函数签名中的裸 `*`：keyword-only 参数
+
+`crud/sku.py` 的 `create_sku` 签名里，`db: Session` 之后立着一个**单独的 `*`**——不是乘号也不是解包符，而是一条分隔线：**它之后的参数只许用关键字传参（keyword-only）**。第 13 章共两处使用：
+
+```python
+# crud/sku.py —— * 之后的 12 个业务参数全部 keyword-only
+def create_sku(db: Session, *, spu_id: int, category3_id: int, ...)
+
+# schemas/sku.py —— 前四个「数据参数」位置自由，开关参数强制点名
+def sku_to_dict(sku, attr_values, sale_attr_values, images, *, details: bool = True)
+```
+
+**两种调用对照（以 `create_sku` 为例）：**
+
+```python
+# ✅ 合法：db 按位置传，其余全部 spu_id=1 这样点名传
+create_sku(db, spu_id=1, category3_id=61, tm_id=2, ...)
+
+# ❌ TypeError：* 之后的参数不允许按位置传
+create_sku(db, 1, 61, 2, ...)
+```
+
+**为什么 `create_sku` 要这么写（docstring 自述动机「一个错位就是静默数据错乱」）：** 连 `db` 共 13 个参数，若全靠位置传，错位是最危险的失败形态——Python 在调用时**不检查类型注解**，`price` 收到 `"200.00"`、`weight` 收到 `4999` 都一声不吭（FastAPI 的 Pydantic 校验只作用于路由函数与依赖，CRUD 这类普通函数没有这层保护），数据**静默错乱**。强制关键字把这类 bug 拦在语法层：
+
+1. **错位拦截**——参数名写错立刻 `TypeError`（unexpected keyword argument），请求根本到不了数据库
+2. **调用处自解释**——每个值贴着名字，一眼看出 `4999` 是价格不是重量
+3. **插参不破坏调用方**——往 keyword-only 区域加新参数，不改变任何既有调用的语义
+
+`db` 留在 `*` 之前是惯例：Session 属于「基础设施参数」，按位置传即可；业务字段才值得强制点名。`sku_to_dict` 则是另一档用法——`details` 这种**带默认值的开关**强制关键字后，调用处必须写 `details=False`，杜绝 `sku_to_dict(s, a, b, i, False)` 这种「不看签名就不知道末尾那个 `False` 是什么」的可读性陷阱。
+
+**同族语法速记：**
+
+| 语法 | 生效范围 | 含义 |
+|------|----------|------|
+| `def f(a, *, b)` | `*` 之后的参数 | keyword-only（本节主角） |
+| `def f(a, /, b)` | `/` 之前的参数 | positional-only（只许按位置传） |
+| `def f(*args)` | 可变参数 | 收集多余的位置参数——**不是分隔符** |
+
+区分要点看 `*` 后面**跟没跟名字**：裸 `*` 是分隔符，`*args` / `**kwargs` 是收集器。
+
+### A.11 工业级如何避免通配路由吞噬：三道防线
+
+A.8 讲清了吞噬的机制（先到先得、FULL 即停），也记下了本项目的对策：`__init__.py` 头部的注释纪律 + 验收脚本回归。本节记录工业级的视角——**不靠「记住顺序」，而是让「顺序敏感」在设计上变少，剩下的交给机器把关**。
+
+**第一道：设计层——让裸通配根本不存在。**
+
+1. **路径只标识资源，分页 / 过滤 / 排序一律走 Query。** 工业级写 `GET /admin/product/spus?page=1&limit=10`，而不是把 `{page}/{limit}` 塞进路径段。分页参数进路径是前端历史契约的产物，不是 API 该有的设计。
+2. **参数段必须跟在固定段之后**（`/spus/{id}`，而不是域根下的裸 `/{id}`）。这样通配的射程天然被固定段关在模块命名空间里。
+3. **历史契约和干净设计冲突时，用防腐层（BFF / 适配层）承接。** 本项目 spu 的 `/{page}/{limit}` 就是为复刻硅谷甄选前端的既有契约而保留的裸通配——工业级做法是单独一层薄路由接住旧路径、翻译后调内部 API，老接口标 deprecated 推前端迁移，而不是让主路由表迁就它。
+
+**第二道：架构层——命名空间铁律。**
+
+把规则写成不变量：**域根下禁止裸参数路由（至少一个固定段才允许出现参数段）**。对照本项目：
+
+| 路由 | 固定段保护 | 杀伤半径 |
+|------|-----------|---------|
+| `/admin/product/baseTrademark/{page}/{limit}` | 有（`baseTrademark`） | 只影响自己命名空间，无害 |
+| `/admin/product/{page}/{limit}` | 无（裸通配） | 域根下所有「两段 GET」，全模块公敌 |
+
+只要铁律成立，跨模块的顺序敏感就不存在了（模块内部「具体在前、通配在后」依然要遵守）。补充一个收窄技巧：参数段用类型化转换器（Starlette 的 `{id:int}` 只匹配数字段）能把射程从「任意段」缩到「数字段」——是缓解，不是根治。
+
+**第三道：工程层——把顺序正确性变成机器的事。**
+
+这是工业级与教学项目最大的分水岭，四件套：
+
+1. **路由遮蔽巡检（route shadowing test）**——遍历注册表，给每条路由构造一条「能被它匹配的样例路径」，检查它会不会被更早注册的路由抢先 FULL match：
+
+```python
+import re
+from fastapi.routing import APIRoute
+from starlette.routing import Match
+
+def test_no_route_shadowing(app):
+    """任何路由的样例路径，都不允许被更早注册的路由吞掉"""
+    routes = [r for r in app.routes if isinstance(r, APIRoute)]
+    for i, later in enumerate(routes):
+        sample = re.sub(r"\{[^}]+\}", "1", later.path)   # 参数段换成样例值
+        for earlier in routes[:i]:
+            method = next(iter(later.methods))
+            match, _ = earlier.matches({"type": "http", "method": method, "path": sample})
+            assert match != Match.FULL, f"{later.path} 会被 {earlier.path} 吞掉"
+```
+
+（示意代码；`uuid` 等转换器需生成对应形状的样例值。）任何顺序变更、新增路由，CI 直接红灯——比注释可靠，还能发现注释覆盖不到的盲区。
+
+2. **OpenAPI 快照测试**——把 `/openapi.json` 存成快照，路由增删或顺序变化导致 schema diff 就报警，人工评审 diff。
+3. **route coverage**——每条路由至少一个端到端测试，顺序被改坏立刻有测试挂。本项目验收脚本就是这个思路，工业级只是把它固化进 CI、而不是跑完即删。
+4. **启动期断言（测试环境）**——把第二道铁律写成启动检查，违规直接拒绝启动。
+
+另有一档做法是**框架封装层排序**：注册完成后按「固定段多者优先」对路由表做稳定重排，把顺序敏感消灭在封装里。对照语言生态：Flask / Werkzeug 的路由表天生按具体度排序，Django 用类型化转换器收窄射程；Starlette 明确选择「注册顺序即优先级」换取简单和性能，代价是正确性责任转移给开发者——所以 FastAPI 团队的四件套里，巡检和启动断言几乎是必需品。
+
+**兜底：可观测性。** 事故真发生时，要能快速定位：异常日志记录**命中的路由模板**（`request.scope["route"].path`——一眼看出「这个 URL 怎么走了那条路由」），而不是只记原始 URL；同时监控 404 / 422 / 业务参数错误码的突增曲线。
+
+**总结对照：**
+
+| 防线 | 工业级做法 | 本项目现状 |
+|------|-----------|-----------|
+| 设计 | 分页走 Query、无裸参数段；历史契约由防腐层承接 | 为复刻前端契约保留了一个裸通配（唯一例外） |
+| 架构 | 参数段必须在固定命名空间内（可写成启动断言） | trademark 是安全样例，spu 是唯一问题源头 |
+| 工程 | CI 遮蔽巡检 + OpenAPI 快照 + route 端到端测试 | 注释纪律 + 一次性验收脚本 |
+| 观测 | 日志带命中路由模板 + 异常指标监控 | 只记原始 URL |
+
+一句话：**教学项目靠「想清楚 + 写在注释里」，工业级靠「设计上让它不致命 + 机器替人把关」。**

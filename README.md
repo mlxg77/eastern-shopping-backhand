@@ -18,6 +18,7 @@
 | Part 8 | 平台属性管理 — 3 个接口（嵌套结构 / 一个接口两用 / 整体覆盖） | 2026-09-19 | 已完成 |
 | Part 9 | SPU 管理 — 5 个接口（根级通配 / 四表同事务 / 双重构） | 2026-09-19 | 已完成 |
 | Part 10 | SKU 管理 — 9 个接口（结构变更 / 快照语义 / 46 接口收官） | 2026-09-19 | 已完成 |
+| Part 11 | 容器化部署 — Dockerfile / 日志落盘挂载 / 远程数据库接入 | 2026-09-19 | 已完成 |
 
 ---
 
@@ -1547,3 +1548,52 @@ def test_no_route_shadowing(app):
 | 观测 | 日志带命中路由模板 + 异常指标监控 | 只记原始 URL |
 
 一句话：**教学项目靠「想清楚 + 写在注释里」，工业级靠「设计上让它不致命 + 机器替人把关」。**
+
+---
+
+## Part 11 · 容器化部署 — Dockerfile、日志落盘挂载与远程数据库接入
+
+> 与前端 `eastern-shopping-fronthand` 联动部署：Nginx 容器对外、本服务只挂内网供其反代、数据库继续用远程 MySQL。根目录 `docker-compose.yml` 统一编排。
+
+### 目标
+
+- 日志升级：业务日志 + uvicorn 日志统一落盘 `logs/app.log`（10MB 轮转、保留 5 份）——容器重建不丢历史，服务器上 `tail -f` 直接可看
+- 编写 `Dockerfile` / `.dockerignore`：镜像只含运行所需；敏感配置（`.env`）与运行时目录（`static/`、`logs/`）不进镜像
+- compose 协同：环境变量注入远程数据库连接串与 JWT 配置；`logs/`、`static/` 卷挂载到宿主机 `deploy/` 下
+
+### 操作过程
+
+1. 改造 `app/config/logging_config.py`：控制台 handler 之外新增 `RotatingFileHandler`（10MB 一份、保留 5 份）写 `logs/app.log`；`uvicorn` / `uvicorn.error` 两个 logger 补挂同一文件 handler
+2. 临时脚本实跑验证：切到项目根、初始化日志、业务 logger 与 uvicorn logger 各打一点，断言均写入 `logs/app.log`（跑完即删）
+3. 编写 `Dockerfile`：`python:3.12-slim`；先装 `tzdata` 把时区定成东八区；再单独 `COPY requirements.txt` 装依赖（阿里 PyPI 源，蹭镜像层缓存）；最后 `COPY . .`，在 `WORKDIR /app` 下以 uvicorn 启动
+4. 编写 `.dockerignore`：`.env` / `.venv` / `__pycache__` / `static/` / `logs/` 等一律排除
+5. `.gitignore` 追加 `/logs/`——日志与上传目录同属运行时产物，不入库
+6. 交付 `docker-compose.yml` 的 backend 服务：`environment` 注入 `DATABASE_URL`（远程 MySQL，密码里的 `@` 用 `%40` 转义）、`JWT_SECRET_KEY`、`DEBUG=false`；`volumes` 挂 `deploy/logs/backend` 与 `deploy/static`；**不写 `ports`**
+
+### 原理与决策
+
+**日志要「落文件 + 卷挂载」，不能只靠 `docker logs`。**
+
+`docker logs` 读的是容器标准输出：即时排查够用，但容器一删日志即失，且 json-file 驱动落在 `/var/lib/docker/containers` 深处不好找。落文件 + volume 之后：宿主机 `deploy/logs/backend/app.log` 随手 `tail`、可归档、换机器可迁移；`RotatingFileHandler` 按 10MB 轮转留 5 份，防日志无限增长撑爆磁盘。
+
+**容器时区：默认 UTC，比北京时间慢 8 小时。**
+
+不处理不只是「日志时间看着别扭」：`datetime.now()` 是业务依赖——上传文件按日期归档目录、雪花 ID 时间戳。后端镜像**自包含**处理（装 tzdata + `ENV TZ` + 链接 `/etc/localtime`，任何宿主机上都正确）；前端 Nginx 容器（alpine、不便构建期装包）则挂载宿主机 `/etc/localtime`——按镜像形态各取所需。
+
+**配置注入：镜像里不放 `.env`，全走环境变量。**
+
+pydantic-settings 的读取优先级是 `环境变量 > .env 文件`，compose 的 `environment` 注入天然盖过一切。所以 `.env` 做双保险忽略：`.gitignore`（不进仓库）+ `.dockerignore`（不进镜像）——镜像层里不存在任何密码，导出镜像也看不到。代价转移到编排文件：`docker-compose.yml` 携带连接串，不应提交到公开仓库（或改 `env_file` 外置）。
+
+**backend 不暴露端口。**
+
+compose 里一个 `ports` 都不写，只由同一网络的 Nginx 容器反代 `backend:8000`。对外攻击面收敛到 Nginx 一处，8000 无需对公网开放——本地的 8000 直连习惯在生产被 Nginx 的 80 端口取代。
+
+**`WORKDIR /app` 与相对路径强绑定。**
+
+Part 6 定过规矩：`static/`（上传归档）等相对路径以**进程工作目录**为基准，必须「从项目根启动」。容器里同理——`WORKDIR /app` 即项目根；挂载点 `/app/logs` 与代码里的 `Path("logs")` 严丝合缝。
+
+### 踩坑记录
+
+1. **容器 UTC 时间差 8 小时**：不处理的话，「日志挂载到服务器本地」反而添堵——看到的时间全是凌晨。这是排查「日志时间不对」问题的第一嫌疑人：容器时区不跟宿主机走，要自己表态。
+2. **uvicorn 日志不会自动进文件**：给 root logger 挂上文件 handler 后业务日志落盘了，但 uvicorn 自己的启动/错误日志（"Application startup complete." 等）仍只进控制台——uvicorn 启动时给 `uvicorn` 系列 logger 配了独立 handler 且不向 root 传播，必须显式给 `uvicorn` / `uvicorn.error` 补挂文件 handler。
+3. **`COPY . .` 会把 `.env` 打进镜像**：`.gitignore` 管得住 Git，管不住 Docker 构建上下文。不写 `.dockerignore`，本地 `.env`（数据库密码、JWT 密钥）会安静进入镜像层，拿到镜像的人能导出查看。

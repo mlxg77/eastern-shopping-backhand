@@ -6,9 +6,12 @@ ACL 登录认证路由
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
-from app.api.deps import get_db
+from app.api.deps import get_current_user, get_db
+from app.crud import menu as menu_crud
+from app.crud import role as role_crud
 from app.crud import user as user_crud
 from app.exceptions import BizCode, BizException
+from app.models.user import User
 from app.schemas.user import LoginRequest
 from app.utils.jwt_utils import create_token
 from app.utils.response import success
@@ -37,3 +40,30 @@ def login(body: LoginRequest, db: Session = Depends(get_db)):
 def logout():
     """用户登出：无状态实现，服务端不做处理，前端清除本地 Token 即可"""
     return success()
+
+
+@router.get("/info")
+def get_info(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """获取当前登录用户信息：路由权限码、按钮权限码、角色、昵称、头像"""
+    # 1. 角色名列表，如 ["超级管理员"]
+    roles = role_crud.get_role_names_by_user_id(db, user.user_id)
+
+    # 2. 用户拥有的全部菜单节点（type=1 菜单 + type=2 按钮）
+    menus = menu_crud.get_menus_by_user_id(db, user.user_id)
+
+    # 3. 按 type 拆分权限码；code 为空字符串的节点（如"全部数据"）不是权限，过滤掉
+    routes = [m.code for m in menus if m.type == 1 and m.code]
+    buttons = [m.code for m in menus if m.type == 2 and m.code]
+
+    return success(
+        {
+            "routes": routes,
+            "buttons": buttons,
+            "roles": roles,
+            "name": user.name,
+            "avatar": user.avatar,
+        }
+    )

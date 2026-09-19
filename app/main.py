@@ -5,11 +5,16 @@ FastAPI 应用入口
 
 import logging
 
+from pathlib import Path
+
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 
 from app.api.exception_handlers import register_exception_handlers
-from app.routes.acl.index import router as acl_index_router
 from app.config import settings, setup_logging
+from app.routes.acl import router as acl_router
+from app.routes.product import router as product_router
+
 from app.utils.response import success
 
 setup_logging()
@@ -43,4 +48,15 @@ def root():
 # 路由注册
 # ============================================================
 
-app.include_router(acl_index_router)
+app.include_router(acl_router)
+app.include_router(product_router)
+
+
+# ============================================================
+# 静态资源服务：上传文件的访问入口
+# ============================================================
+
+# 上传目录自举：StaticFiles 不接受不存在的目录，启动时确保 static/ 存在
+Path("static").mkdir(exist_ok=True)
+# 规则：剥掉 /static 前缀 → 按剩余相对路径在磁盘 static/ 目录里实时查文件
+app.mount("/static", StaticFiles(directory="static"), name="static")

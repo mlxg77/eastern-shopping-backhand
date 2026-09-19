@@ -12,7 +12,7 @@ from app.models.user import User
 from app.exceptions import BizCode, BizException
 from app.schemas.role import RoleSaveRequest, RoleUpdateRequest, role_to_dict
 from app.utils.parse import parse_path_int
-from app.utils.response import success
+from app.utils.response import page_result, success
 
 router = APIRouter(prefix="/admin/acl/role", tags=["角色管理"])
 
@@ -72,12 +72,4 @@ def get_role_page(
     roles, total = role_crud.get_role_page(db, page_num, limit_num, roleName)
 
     # 3. 组装统一分页结构（API.md 2.4）
-    return success(
-        {
-            "records": [role_to_dict(r) for r in roles],
-            "total": total,
-            "size": limit_num,
-            "current": page_num,
-            "pages": (total + limit_num - 1) // limit_num,
-        }
-    )
+    return success(page_result([role_to_dict(r) for r in roles], total, page_num, limit_num))

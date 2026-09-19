@@ -3,7 +3,7 @@ ACL 用户管理路由
 对应接口文档第 5 章：用户管理
 """
 
-from datetime import datetime
+from app.utils.format import fmt_time
 
 from fastapi import APIRouter, Body, Depends
 from sqlalchemy.orm import Session
@@ -16,13 +16,10 @@ from app.models.user import User
 from app.schemas.user import DoAssignRoleRequest, UserSaveRequest, UserUpdateRequest
 from app.schemas.role import role_to_dict
 from app.utils.parse import parse_path_int
-from app.utils.response import success
+from app.utils.response import page_result, success
+from app.utils.format import fmt_time
 
 router = APIRouter(prefix="/admin/acl/user", tags=["用户管理"])
-
-def _fmt_time(dt: datetime | None) -> str:
-    """时间格式化为 yyyy-MM-dd HH:mm:ss（API.md 2.4 约定）"""
-    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else ""
 
 @router.post("/save")
 def save_user(
@@ -133,19 +130,12 @@ def get_user_page(
             "phone": u.phone or "",
             "password": u.password,
             "roleName": ",".join(role_map.get(u.user_id, [])),
-            "createTime": _fmt_time(u.create_time),
-            "updateTime": _fmt_time(u.update_time),
+            "createTime": fmt_time(u.create_time),
+            "updateTime": fmt_time(u.update_time),
         }
         for u in users
     ]
 
     # 5. 组装统一分页结构（API.md 2.4）
-    return success(
-        {
-            "records": records,
-            "total": total,
-            "size": limit_num,
-            "current": page_num,
-            "pages": (total + limit_num - 1) // limit_num,
-        }
-    )
+    # 5. 组装统一分页结构（API.md 2.4）
+    return success(page_result(records, total, page_num, limit_num))

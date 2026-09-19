@@ -4,6 +4,7 @@
 """
 
 from datetime import datetime
+from app.utils.format import fmt_time
 
 from pydantic import BaseModel, Field
 
@@ -25,16 +26,11 @@ class TrademarkUpdateRequest(BaseModel):
     logoUrl: str = Field(min_length=1, max_length=255)
 
 
-def _fmt_time(dt: datetime | None) -> str:
-    """时间格式化为 yyyy-MM-dd HH:mm:ss（API.md 2.4 约定）"""
-    return dt.strftime("%Y-%m-%d %H:%M:%S") if dt else ""
-
-
 def trademark_to_dict(trademark: Trademark) -> dict:
     """Trademark 实体 -> 契约品牌结构（id/tmName/logoUrl/createTime）"""
     return {
         "id": trademark.tm_id,
         "tmName": trademark.tm_name,
         "logoUrl": trademark.logo_url,
-        "createTime": _fmt_time(trademark.create_time),
+        "createTime": fmt_time(trademark.create_time),
     }

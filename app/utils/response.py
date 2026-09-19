@@ -36,3 +36,16 @@ def fail(code: int, message: str) -> JSONResponse:
             "ok": False,
         },
     )
+
+def page_result(records: list, total: int, page: int, limit: int) -> dict:
+    """
+    统一分页结构（API.md 2.4）：records/total/size/current/pages
+    :param records: 当前页记录列表（驼峰化、序列化完成的字典列表）
+    """
+    return {
+        "records": records,
+        "total": total,
+        "size": limit,
+        "current": page,
+        "pages": (total + limit - 1) // limit,
+    }

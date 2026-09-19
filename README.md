@@ -16,6 +16,7 @@
 | Part 6 | 文件上传 + 品牌管理 — 6 个接口（multipart / 静态资源 / 品牌增删改查） | 2026-09-19 | 已完成 |
 | Part 7 | 商品分类 — 3 个接口（三级级联查询 / 双 ID 引用链） | 2026-09-19 | 已完成 |
 | Part 8 | 平台属性管理 — 3 个接口（嵌套结构 / 一个接口两用 / 整体覆盖） | 2026-09-19 | 已完成 |
+| Part 9 | SPU 管理 — 5 个接口（根级通配 / 四表同事务 / 双重构） | 2026-09-19 | 已完成 |
 
 ---
 
@@ -896,6 +897,82 @@ attr_id 是应用层生成的雪花，子行插入不依赖数据库生成的自
 ### 踩坑记录
 
 本章验收一次通过、无踩坑。唯一值得记录的是上章教训的正面兑现：登录段密码与 token 取法直接采用已核实事实书写，省去两轮诊断——**踩过的坑只有写进记忆并复用，才算没白踩**。
+
+---
+
+## Part 9 · SPU 管理 — 5 个接口
+
+**日期：** 2026-09-19
+
+### 目标
+
+实现 `API.md` 第 12 章压轴大章：12.1 SPU 分页（**域根级两段通配** + 旧路径兼容）/ 12.2 新增（四表同事务）/ 12.3 更新（整体覆盖）/ 12.4 删除（级联三子表）/ 12.5 基础销售属性。前九章攒的武器——双 ID、replace、快照、雪花、路由纪律、Rule of Three——这章全部上场。
+
+### 操作过程
+
+#### 1. 事实核对先行
+
+| 事实 | 影响 |
+|------|------|
+| spu.spu_id / spu_name 均非唯一索引 | get_spu_by_spu_id 用 limit(1).first()；不查重 |
+| spu.description NOT NULL 无默认 | Schema 默认 ""（menu.status 先例） |
+| **契约请求字段 imgName/imgUrl vs DB 列 image_name/image_url** | 字段名两层映射实锤 |
+| **sale_attr_value.sale_attr_id 引基础表 sale_attr（8/8），引 spu_sale_attr 主键 0/8** | 写入模型：值行存 baseSaleAttrId；spu_sale_attr 与 sale_attr_value 是「兄弟」非「父子」，靠 (spu_id + base_sale_attr_id) 隐式对齐——本组表最反直觉处 |
+| 三张子表 .spu_id ↔ spu.spu_id 全匹配；↔ 物理 id 全 0 | 引用链铁证（雪花链） |
+| sku 冗余存 category_3_id/tm_id/sku_name/sku_default_img | 快照表——删 SPU 不级联 sku 系（品牌先例延伸） |
+| 存量 4 个 SPU 全在 61 分类 | 验收靶场 |
+
+#### 2. 两笔技术债到线（Rule of Three 第四次使用触发）
+
+- `fmt_time` → 新建 `utils/format.py`：user 路由 / role / trademark 三处重复的 `_fmt_time` 统一收编
+- `page_result` → `utils/response.py` 追加：三处分页五件套手写外壳统一收编
+- 顺手首用：Schema 继承（SpuUpdateRequest(SpuSaveRequest)）——字段膨胀也触发提取
+
+#### 3. 路由红线（本章最重要的一课）
+
+`GET /admin/product/{page}/{limit}` 是 product 域**根级两段 GET 通配**，与 getCategory2/getCategory3（两段 GET）同形状，还叠加旧路径 `/spu/list`（同为两段 GET）。三重防线：
+
+1. spu.py 文件内：`/{page}/{limit}` 必须最后一条（spu/list、baseSaleAttrList 在前）
+2. 聚合层：spu 必须在 category 之后 include（字母序恰好满足）
+3. `__init__.py` docstring 升级为语义警告：**include_router 顺序是匹配语义依赖，不是风格约定**
+
+症状预演：若顺序错了，getCategory2/1 会被当成 page="getCategory2" 吞噬，缺 category3Id → 422 → 201——「返回 201 而非分类列表」这种极难定位的静默错误。
+
+#### 4. 验收方法与结果
+
+45 项断言全过：
+
+- **路由红线（2）**：getCategory2/1、getCategory3/1 均返回分类数组未被通配吞噬
+- **12.1（13）**：五件套 + 白盒对账（4 SPU、id 雪花集合、7 字段恰好、时间格式化）；**旧路径 size/limit/双传三种调法与新路径逐字段一致**；limit 优先于 size；空参数兜底；缺 category3Id → 201
+- **12.2 四表白盒（6）**：主表 + 图片（imgName→image_name 映射）+ 销售属性 + 属性值（**sale_attr_id=基础属性 ID 的兄弟链**）逐行对账
+- **12.3 整体覆盖（4）**：主表字段生效（含 category3Id 改动）、三子表老行全部消失、新数据对账、不存在 id 静默
+- **12.4 级联（3）**：四表零残留、幂等
+- **12.5（3）**：颜色/版本/尺码、字段恰好
+- **存量保护 + 重构回归（6）**：spu 总数回基线；**用户/角色/品牌分页五件套与 records 字段完好（fmt_time/page_result 提取无损，时间格式不变）**
+
+### 原理与决策
+
+**Query 参数的 alias：snake_case 的最后一道坎。**
+请求体里 Pydantic 字段直接用驼峰名；Query 参数是函数参数，参数名自动成为 query key——契约要求前端传 `category3Id`，必须显式 `Query(..., alias="category3Id")`。省略号表必传：缺失 → 422 → 全局处理器 → 201，恰好兑现契约「必传，否则报参数错误」。
+
+**四表同插：一个事务里的一棵树。**
+雪花在应用层生成，spu_id 先造，子行全带着它插——四表 db.add 完一次 commit。双 ID 红利放大版：不依赖自增键就不需要 flush。
+
+**级联边界：编辑数据 vs 销售数据。**
+三子表（图片/销售属性/属性值）是 SPU 的编辑数据，跟着 SPU 生死；sku 系五表是销售数据且自带快照冗余——「关联表与快照表是两种东西」的品牌先例在最大尺度上的应用。
+
+**旧路径兼容的参数优先级。**
+`limit` 优先、缺省回落 `size`——契约括注「参数名均可」的最直读实现，且 `limit if limit is not None else size` 对空串天然兼容（parse_path_int 兜底）。
+
+### 踩坑记录
+
+**1. 验收脚本中文排序预期错误（「预期必须有出处」系列第四次）**
+
+属性值名称断言写 `sorted(...) == ["ZZ红", "ZZ标准版", "ZZ蓝"]`——手写期望顺序本身就不是排序结果（中文按 Unicode 码点：标 U+6807 < 红 U+7EA2 < 蓝 U+84DD）。修正为集合比较（对账意图本就无序）后 45/45 全绿。教训再升级：**中文字面量的有序断言是人类不可靠的领域——要么用集合，要么从程序输出反推期望**。
+
+**2. 静态验收发现的四个小瑕疵（未拦截，语义无影响）**
+
+trademark.py 路由未换成 page_result（手写五件套输出完全等价，验收回归验证语义一致）；user.py 一行重复 import（fmt_time 导了两次）+ 一行重复注释；trademark.py Schema 残留死 import（datetime 已无使用处）。共性成因：重构时「改到能跑」和「改干净」是两个完成标准，后者需要逐行过一遍 import 区。
 
 ---
 

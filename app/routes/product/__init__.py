@@ -7,8 +7,10 @@ from fastapi import APIRouter
 
 from app.routes.product.file_upload import router as file_upload_router
 from app.routes.product.trademark import router as trademark_router
+from app.routes.product.category import router as category_router
 
 router = APIRouter()
 
 router.include_router(file_upload_router)
 router.include_router(trademark_router)
+router.include_router(category_router)

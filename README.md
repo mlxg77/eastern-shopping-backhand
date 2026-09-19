@@ -26,6 +26,7 @@
 > 暂缓的工程化改进事项，完成后从此处移除。
 
 - [ ] **用户模块响应 VO 化**（2026-09-18 决定，暂缓实施）— 为响应 `data` 引入 Pydantic 视图模型：新建 `app/schemas/common.py`（泛型 `PageVO[T]`）、`schemas/user.py` 追加 `UserVO`（字段驼峰直对齐契约、`extra="forbid"`）、列表接口改为 `PageVO[UserVO](...)` + `model_dump()`；统一信封 `success/fail` 不动。改造后须重跑验收回归，保证响应 JSON 逐字段等效。
+- [ ] **路由吞噬防御性回归测试**（2026-09-19 决定，暂缓实施）— spu 的 GET /{page}/{limit} 是域根级两段通配，吞噬判定只看完整路径形状（段数）、不看模块归属；当前防吞噬仅靠 `product/__init__.py` 聚合注册顺序（spu 排最后）+ 注释纪律人工维持，新增子模块或重排 `include_router` 时可能复发。待办：补一个按「路径形状」枚举的回归测试 — 遍历注册后的全部路由，断言域根下所有两段 GET 具体路由（trademark 一段路由、category/sku 等子模块）实际命中不落入 spu 通配；按形状枚举而非按模块枚举。
 
 ---
 
@@ -142,6 +143,38 @@ fastAPI-guigu-shopping/
 - `.env.example` 是模板文件，含占位符，提交到 Git 供协作者参考
 - `.gitignore` 还忽略了 `__pycache__/`、`.venv/`、IDE 配置等
 - 通过 `git init` 初始化仓库，首次提交包含 18 个文件（不含 `.env`）
+
+#### 9. 项目启动
+
+三步启动（在项目根目录执行）：
+
+```
+# 1. 安装依赖（建议先激活虚拟环境）
+pip install -r requirements.txt
+
+# 2. 从模板创建 .env，填入真实配置
+Copy-Item .env.example .env
+
+# 3. 启动服务（开发模式热重载）
+uvicorn app.main:app --reload
+```
+
+`.env` 里必须填好的两个关键项：
+
+- `DATABASE_URL` — 密码含 `@` 等特殊字符要 URL 编码，见下方踩坑记录 4
+- `JWT_SECRET_KEY` — 无默认值即必填，缺失时 pydantic-settings 校验不过，应用在导入阶段直接启动失败
+
+启动成功的验证入口（默认端口 8000）：
+
+| 入口 | 地址 | 预期 |
+|------|------|------|
+| 健康检查 | `http://127.0.0.1:8000/` | 统一信封：`code=200`、`ok=true`、`data.status="ok"` |
+| Swagger 文档 | `http://127.0.0.1:8000/docs` | 列出全部已注册接口，可直接调试 |
+
+两个容易踩的点：
+
+- **必须从项目根目录启动**：`.env` 加载（`env_file=".env"` 是相对路径，按当前工作目录查找）和静态资源挂载（`StaticFiles(directory="static")` 同样相对）都依赖启动时所在目录，换目录启动会读不到配置、挂错静态目录
+- **「能启动」≠「数据库配对了」**：应用无 lifespan 连库逻辑，MySQL 不可用不会阻止启动，错误只在真实接口访问数据库时才暴露——健康检查通过后，建议再调一个涉及数据库的接口（如登录）确认连通性
 
 ### 原理与决策
 

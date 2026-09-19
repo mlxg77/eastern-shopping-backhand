@@ -154,7 +154,7 @@ pip install -r requirements.txt
 
 # 2. 从模板创建 .env，填入真实配置
 Copy-Item .env.example .env
-
+生成随机token字符串：python -c "import secrets; print(secrets.token_hex(32))"
 # 3. 启动服务（开发模式热重载）
 uvicorn app.main:app --reload
 ```

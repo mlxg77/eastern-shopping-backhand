@@ -16,6 +16,7 @@ from app.routes.acl import router as acl_router
 from app.routes.product import router as product_router
 
 from app.utils.response import success
+from fastapi.middleware.cors import CORSMiddleware
 
 setup_logging()
 
@@ -26,6 +27,15 @@ app = FastAPI(
     title=settings.APP_NAME,
     description="硅谷甄选商城管理系统 API",
     version="0.1.0",
+)
+# ============================================================
+# 跨域设置
+# ============================================================ 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],  # Vite 默认端口，即前端的来源
+    allow_methods=["*"],
+    allow_headers=["*"],  # 关键：放行自定义的 token 请求头
 )
 
 # 注册全局异常处理器：保证所有错误也按统一格式返回

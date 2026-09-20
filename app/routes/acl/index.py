@@ -6,13 +6,14 @@ ACL 登录认证路由
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
+
 from app.api.deps import get_current_user, get_db
 from app.crud import menu as menu_crud
 from app.crud import role as role_crud
 from app.crud import user as user_crud
 from app.exceptions import BizCode, BizException
 from app.models.user import User
-from app.schemas.user import LoginRequest
+from app.schemas.user import LoginRequest, UserInfoVO
 from app.utils.jwt_utils import create_token
 from app.utils.response import success
 
@@ -58,12 +59,11 @@ def get_info(
     routes = [m.code for m in menus if m.type == 1 and m.code]
     buttons = [m.code for m in menus if m.type == 2 and m.code]
 
-    return success(
-        {
-            "routes": routes,
-            "buttons": buttons,
-            "roles": roles,
-            "name": user.name,
-            "avatar": user.avatar,
-        }
+    vo = UserInfoVO(
+        routes=routes,
+        buttons=buttons,
+        roles=roles,
+        name=user.name,
+        avatar=user.avatar,
     )
+    return success(vo)

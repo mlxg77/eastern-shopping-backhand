@@ -4,6 +4,7 @@
 """
 
 from pydantic import BaseModel, Field
+from app.schemas.base import CamelModel
 
 class LoginRequest(BaseModel):
     """登录请求体"""
@@ -31,3 +32,12 @@ class DoAssignRoleRequest(BaseModel):
 
     userId: int
     roleIdList: list[int]
+
+class UserInfoVO(CamelModel):
+    """登录用户信息响应 VO（API.md 4.1：routes/buttons/roles/name/avatar）"""
+
+    routes: list[str]
+    buttons: list[str]
+    roles: list[str]
+    name: str
+    avatar: str | None

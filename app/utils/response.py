@@ -4,7 +4,7 @@
 """
 
 from fastapi.responses import JSONResponse
-
+from pydantic import BaseModel
 
 def success(data=None, message: str = "success") -> dict:
     """
@@ -12,6 +12,10 @@ def success(data=None, message: str = "success") -> dict:
     :param data: 业务数据，无数据时传 None
     :param message: 提示信息
     """
+    if isinstance(data, BaseModel):
+        data = data.model_dump(by_alias=True)
+    elif isinstance(data, list) and data and isinstance(data[0], BaseModel):
+        data = [item.model_dump(by_alias=True) for item in data]
     return {
         "code": 200,
         "message": message,

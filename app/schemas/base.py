@@ -7,6 +7,6 @@ class CamelModel(BaseModel):
     model_config = ConfigDict(
         # alias_generator=to_camel: 给每个字段自动起驼峰别名
         alias_generator=to_camel,
-        # populate_by_name: 为 True 时，支持传入 snake_case 的字段名，自动转换为驼峰
+        # populate_by_name: 蛇形本名、驼峰别名都接受
         populate_by_name=True,
     )

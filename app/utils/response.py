@@ -13,6 +13,7 @@ def success(data=None, message: str = "success") -> dict:
     :param message: 提示信息
     """
     if isinstance(data, BaseModel):
+        # by_alias=True ：使用字段的别名（即驼峰命名），默认为 False
         data = data.model_dump(by_alias=True)
     elif isinstance(data, list) and data and isinstance(data[0], BaseModel):
         data = [item.model_dump(by_alias=True) for item in data]
